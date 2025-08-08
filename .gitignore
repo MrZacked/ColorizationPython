@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Data / outputs
+ColorizedOut/
+NonColorImg/*.tmp
+
+# Models (keep directory, ignore large/binary except listed)
+models/*.tmp
+models/*.zip
+models/*.tar
+models/*.tar.gz
+models/*.onnx
+models/*.bin
+
+# Allow these tracked files
+!models/colorization_deploy_v2.prototxt
+!models/pts_in_hull.npy
