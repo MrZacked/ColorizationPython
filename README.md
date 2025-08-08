@@ -30,7 +30,4 @@ python colorize.py --caffemodel models/colorization_release_v2.caffemodel
 python colorize.py --input_dir NonColorImg --output_dir ColorizedOut --caffemodel models/colorization_release_v2.caffemodel
 ```
 
-Notes
------
-- Works on CPU.
-- You must supply the `.caffemodel` yourself.
+colorization_release_v2.caffemodel: https://www.dropbox.com/scl/fi/d8zffur3wmd4wet58dp9x/colorization_release_v2.caffemodel?rlkey=iippu6vtsrox3pxkeohcuh4oy&dl=0

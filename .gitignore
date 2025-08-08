@@ -22,6 +22,7 @@ models/*.tar
 models/*.tar.gz
 models/*.onnx
 models/*.bin
+models/*.caffemodel
 
 # Allow these tracked files
 !models/colorization_deploy_v2.prototxt
