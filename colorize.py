@@ -18,21 +18,12 @@ except ImportError:
 PROTOTXT_URLS = [
     # Author repo (caffe branch, correct path)
     "https://raw.githubusercontent.com/richzhang/colorization/caffe/colorization/models/colorization_deploy_v2.prototxt",
-    # OpenCV mirrors
-    "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/colorization_deploy_v2.prototxt",
-    "https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/colorization_deploy_v2.prototxt",
-    # Legacy author mirror
-    "https://raw.githubusercontent.com/richzhang/colorization/master/models/colorization_deploy_v2.prototxt",
 ]
 
 PTS_IN_HULL_URLS = [
     # Author repo (caffe branch)
     "https://raw.githubusercontent.com/richzhang/colorization/caffe/colorization/resources/pts_in_hull.npy",
-    # OpenCV mirrors
-    "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/pts_in_hull.npy",
-    "https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/pts_in_hull.npy",
-    # Legacy author mirror
-    "https://raw.githubusercontent.com/richzhang/colorization/master/resources/pts_in_hull.npy",
+
 ]
 
 
@@ -109,6 +100,46 @@ def valid_image(path: Path) -> bool:
     return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
+def apply_clahe_on_L(bgr_uint8: np.ndarray, clip_limit: float, tile_grid: int) -> np.ndarray:
+    """Apply CLAHE on L channel and return enhanced BGR uint8 image."""
+    if clip_limit <= 0:
+        return bgr_uint8
+    bgr = bgr_uint8.astype("float32") / 255.0
+    lab = cv.cvtColor(bgr, cv.COLOR_BGR2Lab)
+    L = (lab[:, :, 0] * 255.0 / 100.0).astype("uint8")
+    clahe = cv.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_grid, tile_grid))
+    L_enh = clahe.apply(L)
+    lab[:, :, 0] = (L_enh.astype("float32") * (100.0 / 255.0))
+    out = np.clip(cv.cvtColor(lab, cv.COLOR_Lab2BGR), 0, 1)
+    return (out * 255).astype("uint8")
+
+
+def unsharp_mask(bgr_uint8: np.ndarray, amount: float, radius: int = 1) -> np.ndarray:
+    """Simple unsharp mask using Gaussian blur."""
+    if amount <= 0:
+        return bgr_uint8
+    sigma = max(0.0, float(radius))
+    blur = cv.GaussianBlur(bgr_uint8, (0, 0), sigmaX=sigma, sigmaY=sigma)
+ 
+    out = cv.addWeighted(bgr_uint8, 1.0 + amount, blur, -amount, 0)
+    return out
+
+
+def ensure_sr_model(model_dir: Path, scale: int) -> Path:
+    """Ensure ESPCN_x{scale}.pb model is available."""
+    assert scale in (2, 4)
+    url = f"https://raw.githubusercontent.com/fannymonori/TF-ESPCN/master/export/ESPCN_x{scale}.pb"
+    path = model_dir / f"ESPCN_x{scale}.pb"
+    return ensure_file(path, [url], f"ESPCN_x{scale}.pb")
+
+
+def upscale_with_espcn(bgr_uint8: np.ndarray, model_path: Path, scale: int) -> np.ndarray:
+    sr = cv.dnn_superres.DnnSuperResImpl_create()
+    sr.readModel(str(model_path))
+    sr.setModel("espcn", scale)
+    return sr.upsample(bgr_uint8)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Batch colorize grayscale images in a folder.")
     parser.add_argument("--input_dir", type=Path, default=Path("NonColorImg"),
@@ -122,6 +153,20 @@ def main() -> None:
     parser.add_argument("--caffemodel", type=Path, default=None,
                         help="Path to local colorization .caffemodel (required; no auto-download)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs")
+    # Pre-processing
+    parser.add_argument("--pre_clahe", type=float, default=0.0,
+                        help="Apply CLAHE on L before colorization (clipLimit, 0 disables)")
+    parser.add_argument("--pre_clahe_grid", type=int, default=8,
+                        help="CLAHE tileGridSize (NxN)")
+    parser.add_argument("--pre_unsharp", type=float, default=0.0,
+                        help="Unsharp mask amount before colorization (0 disables)")
+    # Post-processing
+    parser.add_argument("--post_upscale", type=int, choices=[0, 2, 4], default=0,
+                        help="Upscale with ESPCN x2/x4 after colorization (0 disables)")
+    parser.add_argument("--post_unsharp", type=float, default=0.0,
+                        help="Unsharp mask amount after colorization (0 disables)")
+    parser.add_argument("--post_denoise", type=float, default=0.0,
+                        help="FastNLMeans denoise strength (0 disables)")
     args = parser.parse_args()
 
     in_dir: Path = args.input_dir
@@ -173,7 +218,26 @@ def main() -> None:
         bgr = cv.imread(str(img_path), cv.IMREAD_COLOR)
         if bgr is None:
             continue
+        # Pre-processing
+        if args.pre_clahe > 0.0:
+            bgr = apply_clahe_on_L(bgr, clip_limit=args.pre_clahe, tile_grid=args.pre_clahe_grid)
+        if args.pre_unsharp > 0.0:
+            bgr = unsharp_mask(bgr, amount=args.pre_unsharp, radius=1)
+
         out = colorize_bgr(net, bgr)
+
+        # Post-processing
+        if args.post_upscale in (2, 4):
+            try:
+                sr_path = ensure_sr_model(model_dir, args.post_upscale)
+                out = upscale_with_espcn(out, sr_path, args.post_upscale)
+            except Exception as e:  
+                print(f"SR model error: {e}")
+        if args.post_unsharp > 0.0:
+            out = unsharp_mask(out, amount=args.post_unsharp, radius=1)
+        if args.post_denoise > 0.0:
+            h = float(args.post_denoise)
+            out = cv.fastNlMeansDenoisingColored(out, None, h, h, 7, 21)
         cv.imwrite(str(dst), out)
 
     print(f"Done. Saved to: {out_dir}")
